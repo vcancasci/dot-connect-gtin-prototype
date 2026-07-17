@@ -43,6 +43,24 @@ type SearchResult = {
 };
 
 
+
+function choosePrototypeDefaultSource(
+  productId: string,
+  availableSources: { code: string }[]
+): string | null {
+  if (!availableSources.length) return null;
+
+  const score = [...productId].reduce((s,c)=>s+c.charCodeAt(0),0)%100;
+  const preferred =
+    score < 35 ? "DOT_MASTERED" :
+    score < 70 ? "GDSN" :
+    score < 90 ? "USDA" :
+    "UNIPRO";
+
+  const match = availableSources.find(s=>s.code===preferred);
+  return match?.code ?? availableSources[0].code;
+}
+
 function connectProductToQueue(p: ConnectProduct): ProductInQueue {
   return {
     id: p.id,
@@ -813,7 +831,7 @@ export default function GtinSearchPage({
           matchScore: 0,
           rank: 0,
           availableSources: sources,
-          primaryEnrichmentSource: sources[0]?.code ?? null,
+          primaryEnrichmentSource: choosePrototypeDefaultSource(up.id, sources),
           gtins: gtinsByProduct[up.id] ?? [],
           imageUrl: up.primary_image_url,
           matchedFields: {},
