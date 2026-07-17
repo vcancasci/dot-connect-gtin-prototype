@@ -66,29 +66,36 @@ export default function ProductsPage({ onOpenAdvanced }: { onOpenAdvanced: (prod
     const timer = window.setTimeout(async () => {
       setSearching(true);
       const term = gtinQuery.trim();
-      const { data } = await supabase
-        .from("universal_products")
-        .select("id, canonical_title, canonical_brand_name, canonical_manufacturer_name, canonical_manufacturer_item_number, dot_item_number, primary_image_url")
-        .or(`canonical_title.ilike.%${term}%,canonical_brand_name.ilike.%${term}%,canonical_manufacturer_name.ilike.%${term}%,canonical_manufacturer_item_number.ilike.%${term}%,dot_item_number.ilike.%${term}%`)
-        .limit(3);
-      const base = (data ?? []) as Omit<QuickCandidate, "product_identifiers">[];
-      if (!base.length) {
+
+      const { data: matchingIdentifiers, error: identifierError } = await supabase
+        .from("product_identifiers")
+        .select("id, universal_product_id, identifier_value, packaging_level_code, display_label, is_primary")
+        .eq("identifier_type", "GTIN")
+        .ilike("identifier_value", `%${term}%`)
+        .limit(25);
+
+      if (identifierError || !matchingIdentifiers?.length) {
         setCandidates([]);
         setSearching(false);
         return;
       }
-      const ids = base.map((r) => r.id);
-      const { data: identifiers } = await supabase
-        .from("product_identifiers")
-        .select("id, universal_product_id, identifier_value, packaging_level_code, display_label, is_primary")
-        .in("universal_product_id", ids)
-        .eq("identifier_type", "GTIN");
-      setCandidates(base.map((row) => ({
-        ...row,
-        product_identifiers: (identifiers ?? [])
-          .filter((i) => i.universal_product_id === row.id)
-          .sort((a, b) => Number(b.is_primary) - Number(a.is_primary)),
-      })));
+
+      const universalIds = [...new Set(matchingIdentifiers.map((row) => row.universal_product_id))].slice(0, 3);
+      const { data: universalData } = await supabase
+        .from("universal_products")
+        .select("id, canonical_title, canonical_brand_name, canonical_manufacturer_name, canonical_manufacturer_item_number, dot_item_number, primary_image_url")
+        .in("id", universalIds);
+
+      const base = (universalData ?? []) as Omit<QuickCandidate, "product_identifiers">[];
+      setCandidates(universalIds
+        .map((id) => base.find((row) => row.id === id))
+        .filter((row): row is Omit<QuickCandidate, "product_identifiers"> => Boolean(row))
+        .map((row) => ({
+          ...row,
+          product_identifiers: matchingIdentifiers
+            .filter((identifier) => identifier.universal_product_id === row.id)
+            .sort((a, b) => Number(b.is_primary) - Number(a.is_primary)),
+        })));
       setSearching(false);
     }, 250);
     return () => window.clearTimeout(timer);
@@ -182,7 +189,7 @@ export default function ProductsPage({ onOpenAdvanced }: { onOpenAdvanced: (prod
                             {product.assigned_gtin ? (
                               <button onClick={() => { setActiveProduct(product); setGtinQuery(product.assigned_gtin || ""); }} className="text-[#1976d2] underline underline-offset-2">{product.assigned_gtin}</button>
                             ) : (
-                              <button onClick={() => { setActiveProduct(product); setGtinQuery(product.product_name); }} className="font-medium text-[#1976d2] underline underline-offset-2">&lt;Add GTIN&gt;</button>
+                              <button onClick={() => { setActiveProduct(product); setGtinQuery(""); }} className="font-medium text-[#1976d2] underline underline-offset-2">&lt;Add GTIN&gt;</button>
                             )}
                             {isOpen && (
                               <div className="absolute right-0 top-10 z-50 w-[476px] rounded border border-[#ddd] bg-white p-4 shadow-xl">
@@ -191,7 +198,7 @@ export default function ProductsPage({ onOpenAdvanced }: { onOpenAdvanced: (prod
                                   <button className="px-4 py-2 text-sm text-black/55">UPC</button>
                                   <button onClick={() => { setActiveProduct(null); setGtinQuery(""); }} className="ml-auto px-2 text-black/50">×</button>
                                 </div>
-                                <input autoFocus value={gtinQuery} onChange={(e) => setGtinQuery(e.target.value)} className="h-10 w-full rounded border border-[#cfcfcf] px-3 text-sm outline-none focus:border-[#1976d2]" placeholder="Type GTIN, item number, product, supplier, or brand" />
+                                <input autoFocus value={gtinQuery} onChange={(e) => setGtinQuery(e.target.value.replace(/\D/g, ""))} className="h-10 w-full rounded border border-[#cfcfcf] px-3 text-sm outline-none focus:border-[#1976d2]" inputMode="numeric" pattern="[0-9]*" placeholder="12345" />
                                 <div className="mt-3 min-h-[88px]">
                                   {searching ? <div className="py-6 text-center text-sm text-black/50">Searching…</div> : candidates.map((candidate) => {
                                     const identifier = candidate.product_identifiers[0];
