@@ -675,7 +675,21 @@ interface FilterState {
   productLine: boolean;
 }
 
-export default function GtinSearchPage({ onBack }: { onBack: () => void }) {
+export type EnrichmentNavigation = {
+  connectProductId: string;
+  universalProductId: string;
+  identifierId: string;
+  gtin: string;
+  packagingLevel: string;
+};
+
+export default function GtinSearchPage({
+  onBack,
+  onCompare,
+}: {
+  onBack: () => void;
+  onCompare: (selection: EnrichmentNavigation) => void;
+}) {
   const [productsQueue, setProductsQueue] = useState<ProductInQueue[]>([]);
   const [allUniversalResults, setAllUniversalResults] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(true);
@@ -886,9 +900,64 @@ export default function GtinSearchPage({ onBack }: { onBack: () => void }) {
     setTimeout(() => handleSkip(), 300);
   }, [selectedResultIndex, packagingSelections, currentProduct, handleSkip, showNotification]);
 
-  const handleCompare = useCallback(() => {
-    showNotification("Opening enrichment source comparison…");
-  }, [showNotification]);
+  const handleCompare = useCallback(async () => {
+    if (selectedResultIndex === null) {
+      showNotification("Select a result first");
+      return;
+    }
+
+    const result = filteredResultsRef.current[selectedResultIndex];
+    if (!result) {
+      showNotification("Select a result first");
+      return;
+    }
+
+    const packagingLevel = packagingSelections[result.id];
+    if (!packagingLevel) {
+      showNotification("Select a packaging level first");
+      return;
+    }
+
+    const identifier = result.gtins.find((item) => item.level === packagingLevel);
+    if (!identifier) {
+      showNotification("The selected packaging GTIN could not be found");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("connect_products")
+      .update({
+        assigned_universal_product_id: result.universalProductId,
+        assigned_identifier_id: identifier.id,
+        assigned_gtin: identifier.gtin,
+        assigned_packaging_level: packagingLevel,
+        gtin_status: "ASSIGNED",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", currentProduct.id);
+
+    if (error) {
+      showNotification(error.message);
+      return;
+    }
+
+    localStorage.setItem("dot_connect_product_id", currentProduct.id);
+    localStorage.setItem("dot_connect_universal_product_id", result.universalProductId);
+
+    onCompare({
+      connectProductId: currentProduct.id,
+      universalProductId: result.universalProductId,
+      identifierId: identifier.id,
+      gtin: identifier.gtin,
+      packagingLevel,
+    });
+  }, [
+    selectedResultIndex,
+    packagingSelections,
+    currentProduct,
+    onCompare,
+    showNotification,
+  ]);
 
   const checkedFilterKeys = (Object.keys(filters) as (keyof FilterState)[]).filter((key) => filters[key]);
 
