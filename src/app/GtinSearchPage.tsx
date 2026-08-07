@@ -41,6 +41,13 @@ type SearchResult = {
   gtins: { id: string; level: string; label: string; gtin: string }[];
   imageUrl: string | null;
   matchedFields: Record<string, unknown>;
+  enrichmentRecords: SearchEnrichmentRecord[];
+};
+
+type SearchEnrichmentRecord = Record<string, unknown> & {
+  id: string;
+  universal_product_id: string;
+  enrichment_source_id: string;
 };
 
 
@@ -176,7 +183,7 @@ function hashToIndex(s: string, len: number): number {
   return Math.abs(h) % len;
 }
 
-function getFoodImage(title: string, dbImageUrl: string | null, _usedUrls: Set<string> = new Set(), brand = ""): string {
+export function getFoodImage(title: string, dbImageUrl: string | null, _usedUrls: Set<string> = new Set(), brand = ""): string {
   const realUrl = dbImageUrl && !dbImageUrl.includes("picsum") ? dbImageUrl : null;
   if (realUrl) return realUrl;
 
@@ -313,7 +320,7 @@ function NavIcon({ icon, label, active }: { icon: React.ReactNode; label: string
 
 export function SideNav({ activeNav, onProducts }: { activeNav: string; onProducts?: () => void }) {
   return (
-    <div className="bg-[#f5f5f5] shrink-0 w-[64px] flex flex-col items-start py-4 gap-4 h-full border-r border-[#e0e0e0]">
+    <div className="bg-[#f5f5f5] shrink-0 w-[64px] flex flex-col items-start py-4 gap-4 self-stretch min-h-screen border-r border-[#e0e0e0]">
       <div className="flex items-center justify-center w-full px-[10px]">
         <ConnectLogo />
       </div>
@@ -607,6 +614,192 @@ function FilterTextField({
   );
 }
 
+function FilterSelectField({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+}) {
+  return (
+    <select
+      className="text-[14px] font-['Roboto',sans-serif] text-[rgba(0,0,0,0.6)] tracking-[0.15px] leading-6 bg-white w-full outline-none border-0 border-b border-dashed border-black/40 focus:border-solid focus:border-[#1976d2] pb-px"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    >
+      <option value="">Any</option>
+      <option value="true">Yes</option>
+      <option value="false">No</option>
+    </select>
+  );
+}
+
+function readPath(value: unknown, path: string): unknown {
+  return path.split(".").reduce<unknown>((current, part) => {
+    if (!current || typeof current !== "object") return undefined;
+    return (current as Record<string, unknown>)[part];
+  }, value);
+}
+
+function searchableText(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.map(searchableText).filter(Boolean).join(" ");
+  if (typeof value === "object") return Object.values(value as Record<string, unknown>).map(searchableText).filter(Boolean).join(" ");
+  return "";
+}
+
+function recordFieldText(record: SearchEnrichmentRecord, field: FilterFieldDefinition): string {
+  const aliases = field.aliases ?? [];
+  const rawSourceData = record.raw_source_data;
+  for (const alias of aliases) {
+    const directValue = readPath(record, alias);
+    const rawValue = readPath(rawSourceData, alias);
+    const value = searchableText(directValue) || searchableText(rawValue);
+    if (value) return value;
+  }
+  return "";
+}
+
+function matchesEnrichmentField(
+  records: SearchEnrichmentRecord[],
+  field: FilterFieldDefinition,
+  query: string,
+): boolean {
+  const normalizedQuery = query.trim().toLowerCase();
+  return records.some((record) => {
+    const value = recordFieldText(record, field).trim().toLowerCase();
+    if (!value) return false;
+    if (field.kind === "boolean") {
+      return normalizedQuery === "true"
+        ? ["true", "yes", "1"].includes(value)
+        : ["false", "no", "0"].includes(value);
+    }
+    return value.includes(normalizedQuery);
+  });
+}
+
+function FilterField({
+  field,
+  checked,
+  value,
+  onCheckedChange,
+  onValueChange,
+}: {
+  field: FilterFieldDefinition;
+  checked: boolean;
+  value: string;
+  onCheckedChange: (value: boolean) => void;
+  onValueChange: (value: string) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-1 w-full">
+      <FilterCheckbox checked={checked} label={field.label} onChange={onCheckedChange} />
+      {field.kind === "boolean" ? (
+        <FilterSelectField value={value} onChange={onValueChange} />
+      ) : (
+        <FilterTextField value={value} onChange={onValueChange} />
+      )}
+    </div>
+  );
+}
+
+function FilterSection({
+  title,
+  fields,
+  filters,
+  filterValues,
+  defaultOpen = false,
+  onFiltersChange,
+  onFilterValuesChange,
+}: {
+  title: string;
+  fields: FilterFieldDefinition[];
+  filters: FilterState;
+  filterValues: FilterValues;
+  defaultOpen?: boolean;
+  onFiltersChange: (key: FilterKey, value: boolean) => void;
+  onFilterValuesChange: (key: FilterKey, value: string) => void;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const selectedCount = fields.filter((field) => filters[field.key]).length;
+
+  const setAll = (selected: boolean) => {
+    fields.forEach((field) => onFiltersChange(field.key, selected));
+  };
+
+  const clearSection = () => {
+    fields.forEach((field) => {
+      onFiltersChange(field.key, false);
+      onFilterValuesChange(field.key, "");
+    });
+  };
+
+  return (
+    <div className="bg-white rounded-[4px] border border-[#e0e0e0] w-full">
+      <div className="flex gap-1 items-center px-4 py-2 w-full">
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          className="flex flex-1 gap-2 items-center min-w-0 text-left"
+          aria-expanded={open}
+        >
+          <span className="text-[14px] font-['Roboto',sans-serif] font-medium text-black tracking-[0.1px] leading-[1.57]">{title}</span>
+        </button>
+        {open && (
+          <button
+            type="button"
+            onClick={() => setAll(true)}
+            className="text-[#007bc7] text-[13px] tracking-[0.17px] hover:underline whitespace-nowrap"
+          >
+            Select All
+          </button>
+        )}
+        {!open && selectedCount > 0 && (
+          <div className="flex items-center gap-1 border border-[#e0e0e0] rounded-[4px] px-1 py-0.5 text-[12px] font-medium text-[#007bc7] whitespace-nowrap">
+            <span className="px-1">{selectedCount} Selected</span>
+            <button
+              type="button"
+              onClick={clearSection}
+              className="size-4 flex items-center justify-center rounded hover:bg-blue-50"
+              aria-label={`Clear selected ${title} filters`}
+            >
+              <svg className="size-3" fill="none" viewBox="0 0 9.33 9.33">
+                <path d={svgPaths.p3599e800} fill="#007BC7" />
+              </svg>
+            </button>
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={() => setOpen(!open)}
+          className="size-6 shrink-0 flex items-center justify-center"
+          aria-label={open ? `Collapse ${title}` : `Expand ${title}`}
+          aria-expanded={open}
+        >
+          <svg className={`size-6 transition-transform ${open ? "rotate-180" : ""}`} fill="none" viewBox="0 0 12 7.41">
+            <path d={svgPaths.p180a8a80} fill="black" fillOpacity="0.54" />
+          </svg>
+        </button>
+      </div>
+      {open && (
+        <div className="flex flex-col gap-5 px-4 pb-5 pt-2">
+          {fields.map((field) => (
+            <FilterField
+              key={field.key}
+              field={field}
+              checked={filters[field.key]}
+              value={filterValues[field.key]}
+              onCheckedChange={(value) => onFiltersChange(field.key, value)}
+              onValueChange={(value) => onFilterValuesChange(field.key, value)}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function AccordionSection({
   title,
   badge,
@@ -683,16 +876,174 @@ type QuickCandidate = {
   }[];
 };
 
-interface FilterState {
-  productTitle: boolean;
-  productId: boolean;
-  gtin: boolean;
-  upc: boolean;
-  supplierId: boolean;
-  supplierName: boolean;
-  brandName: boolean;
-  productLine: boolean;
-}
+type FilterKey =
+  | "productTitle"
+  | "productId"
+  | "gtin"
+  | "upc"
+  | "supplierId"
+  | "supplierName"
+  | "brandName"
+  | "productLine"
+  | "description"
+  | "featuresBenefits"
+  | "bakeToBake"
+  | "marketingMessage"
+  | "ingredients"
+  | "usdaOrganicPercentage"
+  | "organicTradeCodes"
+  | "naturalSpecialty"
+  | "gmoFree"
+  | "contains"
+  | "mayContain"
+  | "freeFrom"
+  | "allergenStatement"
+  | "applicableDiets"
+  | "storageType"
+  | "storageInstructions"
+  | "storageTemperatureUnit"
+  | "minStorageTemperature"
+  | "maxStorageTemperature"
+  | "totalShelfLife"
+  | "guaranteedShelfLife"
+  | "shelfLifeAfterOpening"
+  | "itemsInPack"
+  | "packSizeText"
+  | "weightUnit"
+  | "eachItemWeight"
+  | "grossWeight"
+  | "netWeight"
+  | "lwhUnit"
+  | "length"
+  | "height"
+  | "width"
+  | "cubeUnit"
+  | "cube"
+  | "primaryPackagingGtin"
+  | "caseGtin"
+  | "innerGtin"
+  | "palletGtin"
+  | "catchWeightProduct"
+  | "countryOfOrigin"
+  | "category"
+  | "subcategory"
+  | "keywords"
+  | "globalProductClassification"
+  | "childNutritionLabel";
+
+interface FilterState extends Record<FilterKey, boolean> {}
+type FilterValues = Record<FilterKey, string>;
+
+type FilterFieldDefinition = {
+  key: FilterKey;
+  label: string;
+  kind?: "text" | "boolean";
+  aliases?: string[];
+};
+
+const KEY_PRODUCT_FIELDS: FilterFieldDefinition[] = [
+  { key: "productTitle", label: "Product Title" },
+  { key: "productId", label: "Product ID" },
+  { key: "gtin", label: "GTIN" },
+  { key: "upc", label: "UPC" },
+  { key: "supplierId", label: "Supplier ID" },
+  { key: "supplierName", label: "Supplier Name" },
+  { key: "brandName", label: "Brand Name" },
+  { key: "productLine", label: "Product Line", aliases: ["product_line"] },
+];
+
+const FILTER_SECTIONS: { title: string; fields: FilterFieldDefinition[] }[] = [
+  {
+    title: "Features",
+    fields: [
+      { key: "description", label: "Description", aliases: ["product_description", "description"] },
+      { key: "featuresBenefits", label: "Features and Benefits", aliases: ["features_and_benefits", "features_benefits"] },
+      { key: "bakeToBake", label: "Bake-to-Bake / Cooking Instructions", aliases: ["preparation_instructions", "preparation_methods"] },
+      { key: "marketingMessage", label: "Marketing Message", aliases: ["marketing_message"] },
+    ],
+  },
+  {
+    title: "Ingredients",
+    fields: [
+      { key: "ingredients", label: "Ingredients", aliases: ["ingredients"] },
+      { key: "usdaOrganicPercentage", label: "USDA Organic Percentage", aliases: ["usda_organic_percentage", "organic_percentage"] },
+      { key: "organicTradeCodes", label: "Organic Trade Codes", aliases: ["organic_trade_codes", "organic_trade_code"] },
+      { key: "naturalSpecialty", label: "Natural Specialty", kind: "boolean", aliases: ["natural_specialty", "natural_specialty_indicator"] },
+      { key: "gmoFree", label: "GMO Free", kind: "boolean", aliases: ["gmo_free", "gmo_free_indicator"] },
+    ],
+  },
+  {
+    title: "Allergens",
+    fields: [
+      { key: "contains", label: "Contains", aliases: ["contains", "allergens"] },
+      { key: "mayContain", label: "May Contain", aliases: ["may_contain"] },
+      { key: "freeFrom", label: "Free From", aliases: ["free_from"] },
+      { key: "allergenStatement", label: "Allergen Statement", aliases: ["allergen_statement"] },
+      { key: "applicableDiets", label: "Applicable Diets", aliases: ["applicable_diets"] },
+    ],
+  },
+  {
+    title: "Storage and Shelf Life",
+    fields: [
+      { key: "storageType", label: "Storage Type", aliases: ["storage_type"] },
+      { key: "storageInstructions", label: "Storage Instructions", aliases: ["storage_instructions"] },
+      { key: "storageTemperatureUnit", label: "Storage Temperature Unit", aliases: ["minimum_storage_temperature_uom", "maximum_storage_temperature_uom"] },
+      { key: "minStorageTemperature", label: "Minimum Storage Temperature", aliases: ["minimum_storage_temperature"] },
+      { key: "maxStorageTemperature", label: "Maximum Storage Temperature", aliases: ["maximum_storage_temperature"] },
+      { key: "totalShelfLife", label: "Total Shelf Life", aliases: ["total_shelf_life_days"] },
+      { key: "guaranteedShelfLife", label: "Guaranteed Shelf Life", aliases: ["guaranteed_shelf_life"] },
+      { key: "shelfLifeAfterOpening", label: "Shelf Life After Opening", aliases: ["shelf_life_after_opening"] },
+    ],
+  },
+  {
+    title: "Packaging and Weight",
+    fields: [
+      { key: "itemsInPack", label: "Items in Pack", aliases: ["items_in_pack", "pack_count"] },
+      { key: "packSizeText", label: "Pack Size Text", aliases: ["pack_size_text", "net_contents"] },
+      { key: "weightUnit", label: "Weight Unit", aliases: ["gross_weight_uom", "net_weight_uom", "weight_uom"] },
+      { key: "eachItemWeight", label: "Each Item Weight", aliases: ["each_item_weight"] },
+      { key: "grossWeight", label: "Gross Weight", aliases: ["gross_weight"] },
+      { key: "netWeight", label: "Net Weight", aliases: ["net_weight"] },
+      { key: "lwhUnit", label: "L/W/H Unit", aliases: ["dimensions_uom"] },
+      { key: "length", label: "Length", aliases: ["length"] },
+      { key: "height", label: "Height", aliases: ["height"] },
+      { key: "width", label: "Width", aliases: ["width"] },
+      { key: "cubeUnit", label: "Cube Unit", aliases: ["cube_uom"] },
+      { key: "cube", label: "Cube", aliases: ["cube"] },
+      { key: "primaryPackagingGtin", label: "Primary Packaging GTIN", aliases: ["primary_packaging_gtin", "primary_gtin"] },
+      { key: "caseGtin", label: "Case GTIN", aliases: ["case_gtin", "child_gtins"] },
+      { key: "innerGtin", label: "Inner GTIN", aliases: ["inner_gtin"] },
+      { key: "palletGtin", label: "Pallet GTIN", aliases: ["pallet_gtin"] },
+      { key: "catchWeightProduct", label: "Catch Weight Product", kind: "boolean", aliases: ["catch_weight_indicator"] },
+    ],
+  },
+  {
+    title: "Additional Details",
+    fields: [
+      { key: "countryOfOrigin", label: "Country of Origin", aliases: ["country_of_origin_code"] },
+      { key: "category", label: "Category", aliases: ["category", "product_type"] },
+      { key: "subcategory", label: "Subcategory", aliases: ["subcategory"] },
+      { key: "keywords", label: "Keywords", aliases: ["keywords"] },
+      { key: "globalProductClassification", label: "Global Product Classification", aliases: ["gpc_code"] },
+      { key: "childNutritionLabel", label: "Child Nutrition Label", kind: "boolean", aliases: ["child_nutrition_label"] },
+    ],
+  },
+];
+
+const FILTER_FIELDS_BY_KEY = new Map(
+  [...KEY_PRODUCT_FIELDS, ...FILTER_SECTIONS.flatMap((section) => section.fields)].map((field) => [field.key, field]),
+);
+
+const DEFAULT_FILTER_STATE = Object.fromEntries(
+  [...FILTER_FIELDS_BY_KEY.keys()].map((key) => [key, false]),
+) as FilterState;
+DEFAULT_FILTER_STATE.productTitle = true;
+DEFAULT_FILTER_STATE.supplierName = true;
+DEFAULT_FILTER_STATE.brandName = true;
+
+const DEFAULT_FILTER_VALUES = Object.fromEntries(
+  [...FILTER_FIELDS_BY_KEY.keys()].map((key) => [key, ""]),
+) as FilterValues;
 
 export type EnrichmentNavigation = {
   connectProductId: string;
@@ -721,7 +1072,6 @@ export default function GtinSearchPage({
   const [searchWithin, setSearchWithin] = useState("");
   const [sortBy, setSortBy] = useState<"match_strength" | "supplier" | "brand">("match_strength");
   const [showSortMenu, setShowSortMenu] = useState(false);
-  const [allergenBadge, setAllergenBadge] = useState<string | undefined>("1 Selected");
   const [notification, setNotification] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const filteredResultsRef = useRef<SearchResult[]>([]);
@@ -779,14 +1129,14 @@ export default function GtinSearchPage({
       const piData = allPiData;
 
       // 3. Enrichment sources via source_product_records → enrichment_sources (paginated)
-      const allSprData: { id: string; universal_product_id: string; enrichment_source_id: string }[] = [];
+      const allSprData: SearchEnrichmentRecord[] = [];
       for (let from = 0; ; from += PAGE) {
         const { data: page } = await supabase
           .from("source_product_records")
-          .select("id, universal_product_id, enrichment_source_id")
+          .select("*")
           .range(from, from + PAGE - 1);
         if (!page) break;
-        allSprData.push(...page);
+        allSprData.push(...(page as SearchEnrichmentRecord[]));
         if (page.length < PAGE) break;
       }
       const sprData = allSprData;
@@ -808,7 +1158,10 @@ export default function GtinSearchPage({
       for (const es of (esData ?? [])) esMap[es.id] = es;
 
       const sourcesByProduct: Record<string, { code: string; name: string; display_order: number }[]> = {};
+      const recordsByProduct: Record<string, SearchEnrichmentRecord[]> = {};
       for (const spr of (sprData ?? [])) {
+        if (!recordsByProduct[spr.universal_product_id]) recordsByProduct[spr.universal_product_id] = [];
+        recordsByProduct[spr.universal_product_id].push(spr);
         const es = esMap[spr.enrichment_source_id];
         if (!es) continue;
         if (!sourcesByProduct[spr.universal_product_id]) sourcesByProduct[spr.universal_product_id] = [];
@@ -836,6 +1189,7 @@ export default function GtinSearchPage({
           gtins: gtinsByProduct[up.id] ?? [],
           imageUrl: up.primary_image_url,
           matchedFields: {},
+          enrichmentRecords: recordsByProduct[up.id] ?? [],
         } satisfies SearchResult;
       });
 
@@ -850,32 +1204,15 @@ export default function GtinSearchPage({
     setSelectedResultIndex(null);
   }, [currentProduct?.id]);
 
-  const [filters, setFilters] = useState<FilterState>({
-    productTitle: true,
-    productId: false,
-    gtin: false,
-    upc: false,
-    supplierId: false,
-    supplierName: true,
-    brandName: true,
-    productLine: false,
-  });
+  const [filters, setFilters] = useState<FilterState>({ ...DEFAULT_FILTER_STATE });
 
-  const [filterValues, setFilterValues] = useState({
-    productTitle: "",
-    productId: "",
-    gtin: "",
-    upc: "",
-    supplierId: "",
-    supplierName: "",
-    brandName: "",
-    productLine: "",
-  });
+  const [filterValues, setFilterValues] = useState<FilterValues>({ ...DEFAULT_FILTER_VALUES });
 
   // Sync filter values whenever the current product changes (after load or skip)
   useEffect(() => {
     if (!currentProduct) return;
     setFilterValues({
+      ...DEFAULT_FILTER_VALUES,
       productTitle: currentProduct.productTitle,
       productId: currentProduct.productId,
       gtin: "",
@@ -1005,6 +1342,9 @@ export default function GtinSearchPage({
         case "productId":
           if (!eq(r.dotItemNumber, val) && !eq(r.mfrItemNumber, val)) return false;
           break;
+        case "supplierId":
+          if (!eq(r.mfrItemNumber, val)) return false;
+          break;
         case "supplierName": {
           const a = val.trim().toLowerCase();
           const b = r.supplier.trim().toLowerCase();
@@ -1021,6 +1361,11 @@ export default function GtinSearchPage({
         case "upc":
           if (!r.gtins.some((g) => g.gtin === val)) return false;
           break;
+        default: {
+          const field = FILTER_FIELDS_BY_KEY.get(key);
+          if (!field || !matchesEnrichmentField(r.enrichmentRecords, field, val)) return false;
+          break;
+        }
       }
     }
     return true;
@@ -1261,56 +1606,27 @@ export default function GtinSearchPage({
                       </div>
                     </div>
 
-                    {/* Key Product Data */}
-                    <div className="bg-white rounded-[4px] border border-[#e0e0e0] w-full">
-                      <div className="flex flex-col gap-6 items-start pb-6 pt-2 px-4">
-                        {/* Section header */}
-                        <div className="flex gap-1 items-center w-full">
-                          <span className="flex-1 text-[14px] font-['Roboto',sans-serif] font-medium text-black tracking-[0.1px] leading-[1.57]">Key Product Data</span>
-                          <button className="text-[#007bc7] text-[14px] tracking-[0.17px] hover:underline">Select All</button>
-                          <button className="size-6 flex items-center justify-center">
-                            <svg className="w-3 h-2" fill="none" viewBox="0 0 12 7.41">
-                              <path d={svgPaths.p2bb41700} fill="black" fillOpacity="0.54" />
-                            </svg>
-                          </button>
-                        </div>
-
-                        {/* Filter fields */}
-                        {(
-                          [
-                            { key: "productTitle", label: "Product Title", value: filterValues.productTitle },
-                            { key: "productId", label: "Product ID", value: filterValues.productId },
-                            { key: "gtin", label: "GTIN", value: filterValues.gtin },
-                            { key: "upc", label: "UPC", value: filterValues.upc },
-                            { key: "supplierId", label: "Mfr Item #", value: filterValues.supplierId },
-                            { key: "supplierName", label: "Supplier Name", value: filterValues.supplierName },
-                            { key: "brandName", label: "Brand Name", value: filterValues.brandName },
-                            { key: "productLine", label: "Product Line", value: filterValues.productLine },
-                          ] as { key: keyof FilterState; label: string; value: string }[]
-                        ).map(({ key, label, value }) => (
-                          <div key={key} className="flex flex-col gap-1 w-full">
-                            <FilterCheckbox
-                              checked={filters[key]}
-                              label={label}
-                              onChange={(v) => setFilters((f) => ({ ...f, [key]: v }))}
-                            />
-                            <FilterTextField
-                              value={value}
-                              onChange={(v) => setFilterValues((fv) => ({ ...fv, [key]: v }))}
-                            />
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
-                    {/* Collapsed accordion sections */}
-                    <AccordionSection title="Features" />
-                    <AccordionSection title="Ingredients" />
-                    <AccordionSection
-                      badge={allergenBadge}
-                      title="Allergens"
-                      onClearBadge={() => setAllergenBadge(undefined)}
+                    <FilterSection
+                      title="Key Product Data"
+                      fields={KEY_PRODUCT_FIELDS}
+                      filters={filters}
+                      filterValues={filterValues}
+                      defaultOpen
+                      onFiltersChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))}
+                      onFilterValuesChange={(key, value) => setFilterValues((current) => ({ ...current, [key]: value }))}
                     />
+
+                    {FILTER_SECTIONS.map((section) => (
+                      <FilterSection
+                        key={section.title}
+                        title={section.title}
+                        fields={section.fields}
+                        filters={filters}
+                        filterValues={filterValues}
+                        onFiltersChange={(key, value) => setFilters((current) => ({ ...current, [key]: value }))}
+                        onFilterValuesChange={(key, value) => setFilterValues((current) => ({ ...current, [key]: value }))}
+                      />
+                    ))}
                   </div>
                 </div>
 
