@@ -23,6 +23,7 @@ interface ProductInQueue {
   productLine: string;
 }
 
+
 type SearchResult = {
   id: string;
   connectProductId: string;
@@ -1062,28 +1063,34 @@ export default function GtinSearchPage({
           }
           return nextIdx;
         });
-      } else if (e.key === "ArrowRight") {
+      } else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
         e.preventDefault();
-        handleSkip();
-      } else if (e.key === "ArrowLeft") {
-        e.preventDefault();
-        handlePrev();
+        const targetIdx = selectedResultIndex ?? 0;
+        const result = filteredResults[targetIdx];
+        if (!result || result.gtins.length === 0) return;
+
+        const levels = result.gtins.map((gtin) => gtin.level);
+        const currentLevel = packagingSelections[result.id];
+        const currentLevelIndex = currentLevel ? levels.indexOf(currentLevel) : -1;
+        const nextLevelIndex =
+          e.key === "ArrowRight"
+            ? (currentLevelIndex + 1) % levels.length
+            : (currentLevelIndex - 1 + levels.length) % levels.length;
+
+        setSelectedResultIndex(targetIdx);
+        setPackagingSelections({ [result.id]: levels[nextLevelIndex] });
       } else if (e.key === "Enter" && e.shiftKey) {
         e.preventDefault();
         handleSaveGlobal();
       } else if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
         handleCompare();
-      } else if (["1", "2", "3"].includes(e.key)) {
+      } else if (e.key === "<") {
         e.preventDefault();
-        const targetIdx = selectedResultIndex ?? 0;
-        const result = filteredResults[targetIdx];
-        if (!result) return;
-        const level = result.gtins[parseInt(e.key) - 1]?.level ?? null;
-        if (level) {
-          setSelectedResultIndex(targetIdx);
-          setPackagingSelections({ [result.id]: level });
-        }
+        handlePrev();
+      } else if (e.key === ">") {
+        e.preventDefault();
+        handleSkip();
       }
     };
     window.addEventListener("keydown", handler);
@@ -1175,9 +1182,9 @@ export default function GtinSearchPage({
             <div className="flex items-center px-4 py-4">
               <h1 className="text-[24px] font-['Roboto',sans-serif] text-[rgba(0,0,0,0.87)] leading-[1.334] flex-1">GTIN Enrichment Search</h1>
               <div className="bg-[#fafafa] flex gap-3 items-center px-4 py-1.5 rounded-[4px] text-[12px] text-[rgba(0,0,0,0.6)] font-['Roboto',sans-serif] tracking-[0.4px] whitespace-nowrap border border-[#e0e0e0]">
-                <span>← → = Previous/Skip</span>
+                <span>&lt; &gt; = Previous/Skip</span>
                 <span>↑↓ = Make Selection</span>
-                <span>1–3 = Cycle Packaging Level</span>
+                <span>← → = Cycle Packaging Level</span>
                 <span>Shift+Enter = Save with Global Default</span>
                 <span>Enter = Compare Enrichment Sources</span>
               </div>
@@ -1377,5 +1384,3 @@ export default function GtinSearchPage({
     </div>
   );
 }
-
-
